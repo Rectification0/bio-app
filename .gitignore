@@ -9,6 +9,7 @@ env/
 
 # Streamlit
 .streamlit/secrets.toml
+.streamlit/secrets.toml.example
 
 # Data
 data/*.db
