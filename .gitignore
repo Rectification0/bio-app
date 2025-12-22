@@ -27,5 +27,10 @@ Thumbs.db
 # Environment
 .env
 
-# Logs
+# Logs - NEVER commit logs to public repositories
+logs/
 *.log
+log_analyzer.py
+log_monitor.py
+logging_config.py
+LOGGING_*.md

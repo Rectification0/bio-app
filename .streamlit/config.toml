@@ -3,10 +3,12 @@ headless = true
 port = 8501
 enableXsrfProtection = true
 
-
 [theme]
-primaryColor = "#2E7D32"
-backgroundColor = "#F5F5F5"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#1B1B1B"
+primaryColor = "#667eea"
+backgroundColor = "#0f0f23"
+secondaryBackgroundColor = "#1e293b"
+textColor = "#e2e8f0"
 font = "sans serif"
+
+[browser]
+gatherUsageStats = false

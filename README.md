@@ -86,7 +86,7 @@ A precision agriculture application that analyzes soil data and provides AI-powe
 - **Frontend**: Streamlit
 - **Visualization**: Plotly
 - **Database**: SQLite
-- **AI**: Groq API (Llama 3.1)
+- **AI**: Groq API (Llama 3.3)
 - **Validation**: Pydantic
 - **Data**: Pandas
 
