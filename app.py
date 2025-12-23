@@ -11,6 +11,7 @@ import os
 import json
 import logging
 import traceback
+import time
 from datetime import datetime
 from typing import Dict, Optional, Any
 from groq import Groq
@@ -22,7 +23,7 @@ import hashlib
 
 # Enhanced Logging Configuration - LOCAL ONLY
 def setup_logging():
-    """Configure comprehensive logging for NutriSense application - LOCAL DEVELOPMENT ONLY"""
+    """Configure single JSON file logging for NutriSense application - LOCAL DEVELOPMENT ONLY"""
     
     # Skip logging setup if running in production/cloud environment
     if os.getenv('STREAMLIT_SHARING') or os.getenv('STREAMLIT_CLOUD') or os.getenv('RAILWAY_ENVIRONMENT'):
@@ -49,52 +50,92 @@ def setup_logging():
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
     
-    # Create formatters
-    detailed_formatter = logging.Formatter(
-        '%(asctime)s | %(levelname)-8s | %(name)s | %(funcName)s:%(lineno)d | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    simple_formatter = logging.Formatter(
-        '%(asctime)s | %(levelname)-8s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    # Create single JSON log file path
+    log_file = os.path.join('logs', 'nutrisense_realtime.json')
     
     try:
-        # File handler for all logs
-        all_logs_handler = logging.FileHandler(
-            os.path.join(log_dir, f'nutrisense_{datetime.now().strftime("%Y%m%d")}.log'),
-            encoding='utf-8'
-        )
-        all_logs_handler.setLevel(logging.DEBUG)
-        all_logs_handler.setFormatter(detailed_formatter)
+        # Initialize JSON log file if it doesn't exist
+        if not os.path.exists(log_file):
+            with open(log_file, 'w', encoding='utf-8') as f:
+                json.dump({"logs": [], "metadata": {"created": datetime.now().isoformat(), "version": "1.0"}}, f, indent=2)
         
-        # File handler for errors only
-        error_handler = logging.FileHandler(
-            os.path.join(log_dir, f'errors_{datetime.now().strftime("%Y%m%d")}.log'),
-            encoding='utf-8'
-        )
-        error_handler.setLevel(logging.ERROR)
-        error_handler.setFormatter(detailed_formatter)
+        # Create custom JSON handler
+        class JSONFileHandler(logging.Handler):
+            def __init__(self, filename):
+                super().__init__()
+                self.filename = filename
+                
+            def emit(self, record):
+                try:
+                    # Create log entry
+                    log_entry = {
+                        "timestamp": datetime.now().isoformat(),
+                        "level": record.levelname,
+                        "logger": record.name,
+                        "function": record.funcName,
+                        "line": record.lineno,
+                        "message": record.getMessage(),
+                        "module": record.module if hasattr(record, 'module') else 'unknown'
+                    }
+                    
+                    # Add structured data if present
+                    if hasattr(record, 'event_type'):
+                        log_entry["event_type"] = record.event_type
+                        log_entry["event_message"] = getattr(record, 'event_message', '')
+                        log_entry["event_data"] = getattr(record, 'event_data', None)
+                    
+                    if hasattr(record, 'error_type'):
+                        log_entry["error_type"] = record.error_type
+                        log_entry["error_message"] = getattr(record, 'error_message', '')
+                        log_entry["error_context"] = getattr(record, 'error_context', '')
+                        log_entry["error_data"] = getattr(record, 'error_data', None)
+                        log_entry["traceback"] = getattr(record, 'traceback', '')
+                    
+                    # Add session ID if present
+                    if hasattr(record, 'session_id'):
+                        log_entry["session_id"] = record.session_id
+                    
+                    # Add exception info if present
+                    if record.exc_info:
+                        log_entry["exception"] = self.format(record)
+                    
+                    # Read current logs
+                    try:
+                        with open(self.filename, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        data = {"logs": [], "metadata": {"created": datetime.now().isoformat(), "version": "1.0"}}
+                    
+                    # Add new log entry
+                    data["logs"].append(log_entry)
+                    data["metadata"]["last_updated"] = datetime.now().isoformat()
+                    data["metadata"]["total_logs"] = len(data["logs"])
+                    
+                    # Keep only last 1000 logs to prevent file from growing too large
+                    if len(data["logs"]) > 1000:
+                        data["logs"] = data["logs"][-1000:]
+                        data["metadata"]["truncated"] = True
+                        data["metadata"]["truncated_at"] = datetime.now().isoformat()
+                    
+                    # Write back to file (real-time update)
+                    with open(self.filename, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                        
+                except Exception:
+                    # Silently fail if logging doesn't work
+                    pass
         
-        # File handler for events (INFO level)
-        events_handler = logging.FileHandler(
-            os.path.join(log_dir, f'events_{datetime.now().strftime("%Y%m%d")}.log'),
-            encoding='utf-8'
-        )
-        events_handler.setLevel(logging.INFO)
-        events_handler.setFormatter(simple_formatter)
-        
-        # Add handlers to logger
-        logger.addHandler(all_logs_handler)
-        logger.addHandler(error_handler)
-        logger.addHandler(events_handler)
+        # Add JSON handler to logger
+        json_handler = JSONFileHandler(log_file)
+        json_handler.setLevel(logging.DEBUG)
+        logger.addHandler(json_handler)
         
         # Console handler for development (optional)
         if os.getenv('NUTRISENSE_DEBUG', 'false').lower() == 'true':
             console_handler = logging.StreamHandler()
             console_handler.setLevel(logging.INFO)
-            console_handler.setFormatter(simple_formatter)
+            console_formatter = logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s')
+            console_handler.setFormatter(console_formatter)
             logger.addHandler(console_handler)
     
     except Exception:
@@ -119,18 +160,22 @@ def log_event(event_type: str, message: str, data: Optional[Dict] = None):
     if not is_logging_enabled():
         return
         
-    log_data = {
-        'event_type': event_type,
-        'message': message,
-        'timestamp': datetime.now().isoformat(),
-        'session_id': st.session_state.get('session_id', 'unknown')
-    }
-    
-    if data:
-        log_data['data'] = data
-    
     try:
-        logger.info(f"EVENT: {event_type} | {message} | Data: {json.dumps(data) if data else 'None'}")
+        # Create structured log message
+        log_message = f"EVENT: {event_type} | {message}"
+        if data:
+            log_message += f" | Data: {json.dumps(data, default=str)}"
+        
+        # Create extra fields for structured logging
+        extra_data = {
+            'event_type': event_type,
+            'event_message': message,
+            'event_data': data,
+            'session_id': st.session_state.get('session_id', 'unknown')
+        }
+        
+        # Log with extra data
+        logger.info(log_message, extra=extra_data)
     except:
         pass  # Silently fail if logging doesn't work
 
@@ -139,21 +184,24 @@ def log_error(error: Exception, context: str = "", additional_data: Optional[Dic
     if not is_logging_enabled():
         return
         
-    error_data = {
-        'error_type': type(error).__name__,
-        'error_message': str(error),
-        'context': context,
-        'timestamp': datetime.now().isoformat(),
-        'session_id': st.session_state.get('session_id', 'unknown'),
-        'traceback': traceback.format_exc()
-    }
-    
-    if additional_data:
-        error_data['additional_data'] = additional_data
-    
     try:
-        logger.error(f"ERROR: {context} | {type(error).__name__}: {str(error)} | Data: {json.dumps(additional_data) if additional_data else 'None'}")
-        logger.debug(f"TRACEBACK: {traceback.format_exc()}")
+        # Create structured error message
+        error_message = f"ERROR: {context} | {type(error).__name__}: {str(error)}"
+        if additional_data:
+            error_message += f" | Data: {json.dumps(additional_data, default=str)}"
+        
+        # Create extra fields for structured logging
+        extra_data = {
+            'error_type': type(error).__name__,
+            'error_message': str(error),
+            'error_context': context,
+            'error_data': additional_data,
+            'session_id': st.session_state.get('session_id', 'unknown'),
+            'traceback': traceback.format_exc()
+        }
+        
+        # Log error with extra data
+        logger.error(error_message, extra=extra_data)
     except:
         pass  # Silently fail if logging doesn't work
 
@@ -241,14 +289,34 @@ class SoilData(BaseModel):
             raise
 
 def get_health_score(soil: Dict) -> float:
-    """Calculate soil health score with logging"""
+    """Calculate soil health score with comprehensive error handling and logging"""
     try:
         log_user_action('HEALTH_SCORE_CALCULATION', {'soil_params': list(soil.keys())})
         
-        ph = max(0, 25 - abs(soil['pH'] - 7.0) * 3.5)
-        ec = max(0, 25 - min(soil['EC'], 4.0) * 6.25)
-        moist = 20 if 25 <= soil['Moisture'] <= 40 else max(0, 20 - abs(soil['Moisture'] - 32.5) * 0.5)
-        npk = min(soil['Nitrogen']/80*10, 10) + min(soil['Phosphorus']/50*10, 10) + min(soil['Potassium']/250*10, 10)
+        # Validate input data
+        required_params = ['pH', 'EC', 'Moisture', 'Nitrogen', 'Phosphorus', 'Potassium']
+        missing_params = [param for param in required_params if param not in soil]
+        if missing_params:
+            log_error(ValueError(f'Missing required parameters: {missing_params}'), 'HEALTH_SCORE_MISSING_PARAMS')
+            return 50.0
+        
+        # Validate data types and ranges
+        for param, value in soil.items():
+            if not isinstance(value, (int, float)):
+                log_error(TypeError(f'Parameter {param} must be numeric, got {type(value)}'), 'HEALTH_SCORE_TYPE_ERROR')
+                return 50.0
+            if value < 0:
+                log_error(ValueError(f'Parameter {param} cannot be negative: {value}'), 'HEALTH_SCORE_NEGATIVE_VALUE')
+                return 50.0
+        
+        # Calculate components with bounds checking
+        ph = max(0, min(25, 25 - abs(soil['pH'] - 7.0) * 3.5))
+        ec = max(0, min(25, 25 - min(soil['EC'], 4.0) * 6.25))
+        moist = 20 if 25 <= soil['Moisture'] <= 40 else max(0, min(20, 20 - abs(soil['Moisture'] - 32.5) * 0.5))
+        npk = (min(soil['Nitrogen']/80*10, 10) + 
+               min(soil['Phosphorus']/50*10, 10) + 
+               min(soil['Potassium']/250*10, 10))
+        
         score = min(max(ph + ec + moist + npk, 0), 100)
         
         log_event('HEALTH_SCORE_CALCULATED', f'Health score: {score:.1f}/100', {
@@ -259,7 +327,7 @@ def get_health_score(soil: Dict) -> float:
         return score
     except Exception as e:
         log_error(e, 'HEALTH_SCORE_CALCULATION_ERROR', {'soil_data': soil})
-        return 50.0
+        return 50.0  # Safe fallback
 
 def interpret(param: str, val: float) -> tuple:
     """Interpret soil parameter with logging"""
@@ -392,16 +460,25 @@ Microbial: {soil['Microbial']:.2f}/10, Temp: {soil['Temperature']:.1f}°C"""
 
 @st.cache_data(ttl=300)
 def call_groq(_hash: str, prompt: str, _task: str) -> str:
-    """Call Groq API with comprehensive logging"""
+    """Call Groq API with comprehensive error handling and logging"""
     try:
         log_ai_interaction('START', st.session_state.get("selected_model", "unknown"), _task, True)
         
         client = get_groq_client()
         if not client:
             log_ai_interaction(st.session_state.get("selected_model", "unknown"), _task, False, error="No client available")
-            return "⚠️ Configure GROQ_API_KEY"
+            return "⚠️ Configure GROQ_API_KEY in Streamlit secrets"
         
         model = st.session_state.get("selected_model", "llama-3.3-70b-versatile")
+        
+        # Validate inputs
+        if not prompt or not prompt.strip():
+            log_error(ValueError("Empty prompt provided"), 'AI_REQUEST_EMPTY_PROMPT')
+            return "⚠️ Error: Empty prompt"
+        
+        if len(prompt) > 10000:  # Reasonable limit
+            log_error(ValueError(f"Prompt too long: {len(prompt)} characters"), 'AI_REQUEST_PROMPT_TOO_LONG')
+            return "⚠️ Error: Prompt too long"
         
         log_event('AI_REQUEST_START', f'Calling {model} for {_task}', {
             'model': model,
@@ -409,17 +486,39 @@ def call_groq(_hash: str, prompt: str, _task: str) -> str:
             'prompt_length': len(prompt)
         })
         
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are an agricultural expert. Provide practical advice for Indian farmers in simple language."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=600
-        )
+        # Add timeout and retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are an agricultural expert. Provide practical advice for Indian farmers in simple language."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=600,
+                    timeout=30  # 30 second timeout
+                )
+                break
+            except Exception as retry_error:
+                if attempt == max_retries - 1:
+                    raise retry_error
+                log_event('AI_REQUEST_RETRY', f'Attempt {attempt + 1} failed, retrying', {
+                    'error': str(retry_error),
+                    'attempt': attempt + 1
+                })
+                time.sleep(1)  # Brief delay before retry
+        
+        if not resp or not resp.choices or not resp.choices[0].message:
+            log_error(ValueError("Invalid API response structure"), 'AI_REQUEST_INVALID_RESPONSE')
+            return "⚠️ Error: Invalid response from AI service"
         
         response_content = resp.choices[0].message.content
+        if not response_content or not response_content.strip():
+            log_error(ValueError("Empty response from API"), 'AI_REQUEST_EMPTY_RESPONSE')
+            return "⚠️ Error: Empty response from AI service"
+        
         response_length = len(response_content)
         
         log_ai_interaction(model, _task, True, response_length)
@@ -433,13 +532,24 @@ def call_groq(_hash: str, prompt: str, _task: str) -> str:
         return response_content
         
     except Exception as e:
+        error_msg = str(e)
         log_error(e, 'AI_REQUEST_ERROR', {
             'model': st.session_state.get("selected_model", "unknown"),
             'task': _task,
-            'prompt_length': len(prompt) if 'prompt' in locals() else 0
+            'prompt_length': len(prompt) if 'prompt' in locals() else 0,
+            'error_type': type(e).__name__
         })
-        log_ai_interaction(st.session_state.get("selected_model", "unknown"), _task, False, error=str(e))
-        return f"⚠️ Error: {e}"
+        log_ai_interaction(st.session_state.get("selected_model", "unknown"), _task, False, error=error_msg)
+        
+        # Return user-friendly error messages
+        if "timeout" in error_msg.lower():
+            return "⚠️ Request timed out. Please try again."
+        elif "rate limit" in error_msg.lower():
+            return "⚠️ Rate limit exceeded. Please wait a moment and try again."
+        elif "api key" in error_msg.lower():
+            return "⚠️ API key issue. Please check your configuration."
+        else:
+            return f"⚠️ AI service temporarily unavailable. Please try again later."
 
 def save_record(soil: Dict, summary: str, loc: str = ""):
     """Save soil record with comprehensive logging"""
@@ -1219,30 +1329,33 @@ with tab2:
         
         col1, col2 = st.columns(2)
         
+        # Use sample data if available
+        sample = st.session_state.get('sample_data', {})
+        
         with col1:
             st.markdown("**🔬 Chemical Properties**")
             
             pH = st.number_input(
                 "pH Level", 
-                min_value=0.0, max_value=14.0, value=7.0, step=0.1,
+                min_value=0.0, max_value=14.0, value=sample.get('pH', 7.0), step=0.1,
                 help="Soil acidity/alkalinity. Optimal range: 6.5-7.5"
             )
             
             EC = st.number_input(
                 "Electrical Conductivity (dS/m)", 
-                min_value=0.0, max_value=20.0, value=2.0, step=0.1,
+                min_value=0.0, max_value=20.0, value=sample.get('EC', 2.0), step=0.1,
                 help="Soil salinity indicator. <2.0 dS/m is ideal for most crops"
             )
             
             N = st.number_input(
                 "Available Nitrogen (mg/kg)", 
-                min_value=0.0, max_value=500.0, value=50.0, step=1.0,
+                min_value=0.0, max_value=500.0, value=sample.get('Nitrogen', 50.0), step=1.0,
                 help="Essential for plant growth. Optimal: 40-80 mg/kg"
             )
             
             P = st.number_input(
                 "Available Phosphorus (mg/kg)", 
-                min_value=0.0, max_value=200.0, value=30.0, step=1.0,
+                min_value=0.0, max_value=200.0, value=sample.get('Phosphorus', 30.0), step=1.0,
                 help="Important for root development. Optimal: 20-50 mg/kg"
             )
         
@@ -1251,25 +1364,25 @@ with tab2:
             
             Moist = st.number_input(
                 "Moisture Content (%)", 
-                min_value=0.0, max_value=100.0, value=25.0, step=1.0,
+                min_value=0.0, max_value=100.0, value=sample.get('Moisture', 25.0), step=1.0,
                 help="Current soil water content. Optimal: 25-40%"
             )
             
             Temp = st.number_input(
                 "Soil Temperature (°C)", 
-                min_value=0.0, max_value=50.0, value=25.0, step=0.5,
+                min_value=0.0, max_value=50.0, value=sample.get('Temperature', 25.0), step=0.5,
                 help="Current soil temperature affects microbial activity"
             )
             
             K = st.number_input(
                 "Available Potassium (mg/kg)", 
-                min_value=0.0, max_value=500.0, value=150.0, step=1.0,
+                min_value=0.0, max_value=500.0, value=sample.get('Potassium', 150.0), step=1.0,
                 help="Essential for disease resistance. Optimal: 100-250 mg/kg"
             )
             
             Micro = st.number_input(
                 "Microbial Activity Index", 
-                min_value=0.0, max_value=10.0, value=5.0, step=0.1,
+                min_value=0.0, max_value=10.0, value=sample.get('Microbial', 5.0), step=0.1,
                 help="Biological activity level (0-10 scale). Higher is better"
             )
         
@@ -1288,22 +1401,60 @@ with tab2:
             try:
                 log_user_action('SOIL_DATA_FORM_SUBMITTED', {'location': loc_input})
                 
-                soil_dict = {
+                # Validate all inputs are present and numeric
+                input_values = {
                     "pH": pH, "EC": EC, "Moisture": Moist, "Nitrogen": N, 
                     "Phosphorus": P, "Potassium": K, "Microbial": Micro, "Temperature": Temp
                 }
                 
+                # Check for None or invalid values
+                for param, value in input_values.items():
+                    if value is None:
+                        raise ValueError(f"{param} cannot be empty")
+                    if not isinstance(value, (int, float)):
+                        raise ValueError(f"{param} must be a number")
+                    if value < 0:
+                        raise ValueError(f"{param} cannot be negative")
+                
+                # Additional range validations
+                if not (0 <= pH <= 14):
+                    raise ValueError("pH must be between 0 and 14")
+                if EC > 20:
+                    raise ValueError("EC cannot exceed 20 dS/m")
+                if Moist > 100:
+                    raise ValueError("Moisture cannot exceed 100%")
+                if N > 500:
+                    raise ValueError("Nitrogen cannot exceed 500 mg/kg")
+                if P > 200:
+                    raise ValueError("Phosphorus cannot exceed 200 mg/kg")
+                if K > 500:
+                    raise ValueError("Potassium cannot exceed 500 mg/kg")
+                if Micro > 10:
+                    raise ValueError("Microbial index cannot exceed 10")
+                if Temp > 50:
+                    raise ValueError("Temperature cannot exceed 50°C")
+                
+                soil_dict = input_values
+                
                 log_event('SOIL_DATA_VALIDATION_START', 'Validating soil data', soil_dict)
                 
-                # Validate using Pydantic
-                SoilData(**soil_dict)
+                # Validate using Pydantic with additional error context
+                try:
+                    SoilData(**soil_dict)
+                except Exception as pydantic_error:
+                    log_error(pydantic_error, 'PYDANTIC_VALIDATION_ERROR', soil_dict)
+                    raise ValueError(f"Data validation failed: {str(pydantic_error)}")
                 
                 log_event('SOIL_DATA_VALIDATION_SUCCESS', 'Soil data validation passed')
                 
-                # Store data
-                st.session_state.soil_data = soil_dict
-                st.session_state.location = loc_input
-                st.session_state.timestamp = datetime.now().isoformat()
+                # Store data with error handling
+                try:
+                    st.session_state.soil_data = soil_dict
+                    st.session_state.location = loc_input or "Unknown Location"
+                    st.session_state.timestamp = datetime.now().isoformat()
+                except Exception as storage_error:
+                    log_error(storage_error, 'SESSION_STORAGE_ERROR', soil_dict)
+                    raise ValueError("Failed to store data in session")
                 
                 # Clear previous AI results
                 cleared_keys = []
@@ -1318,27 +1469,42 @@ with tab2:
                     'parameters': list(soil_dict.keys())
                 })
                 
-                # Professional success feedback
-                health_score = get_health_score(soil_dict)
+                # Calculate health score with error handling
+                try:
+                    health_score = get_health_score(soil_dict)
+                    if not isinstance(health_score, (int, float)) or health_score < 0 or health_score > 100:
+                        log_error(ValueError(f"Invalid health score: {health_score}"), 'INVALID_HEALTH_SCORE')
+                        health_score = 50.0  # Safe fallback
+                except Exception as health_error:
+                    log_error(health_error, 'HEALTH_SCORE_ERROR', soil_dict)
+                    health_score = 50.0
                 
                 st.success("✅ Soil data saved and analyzed successfully!")
                 
-                # Show immediate analysis results
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Health Score", f"{health_score:.0f}/100")
-                with col2:
-                    ph_status, ph_icon = interpret('pH', soil_dict['pH'])
-                    st.metric("pH Status", f"{ph_icon} {ph_status}")
-                with col3:
-                    st.metric("Parameters", "8 tracked")
+                # Show immediate analysis results with error handling
+                try:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Health Score", f"{health_score:.0f}/100")
+                    with col2:
+                        ph_status, ph_icon = interpret('pH', soil_dict['pH'])
+                        st.metric("pH Status", f"{ph_icon} {ph_status}")
+                    with col3:
+                        st.metric("Parameters", "8 tracked")
+                except Exception as display_error:
+                    log_error(display_error, 'METRICS_DISPLAY_ERROR')
+                    st.warning("Analysis completed but display metrics failed")
                 
                 st.info("💡 Go to the **Dashboard** tab to view detailed analysis and AI recommendations.")
+                
+                # Trigger page refresh to update dashboard immediately
+                st.rerun()
                 
             except ValueError as e:
                 log_error(e, 'SOIL_DATA_VALIDATION_ERROR', {
                     'form_data': soil_dict if 'soil_dict' in locals() else 'not_created',
-                    'location': loc_input
+                    'location': loc_input,
+                    'error_type': 'ValueError'
                 })
                 st.error(f"❌ Validation Error: {str(e)}")
                 st.info("💡 Please check that all values are within the specified ranges")
@@ -1346,10 +1512,16 @@ with tab2:
             except Exception as e:
                 log_error(e, 'SOIL_DATA_FORM_ERROR', {
                     'location': loc_input,
-                    'form_data': soil_dict if 'soil_dict' in locals() else 'not_created'
+                    'form_data': soil_dict if 'soil_dict' in locals() else 'not_created',
+                    'error_type': type(e).__name__
                 })
                 st.error(f"❌ Unexpected Error: {str(e)}")
                 st.info("💡 Please try again or contact support if the problem persists")
+                
+                # Show debug info in development
+                if is_logging_enabled():
+                    with st.expander("🔧 Debug Information (Development Only)"):
+                        st.code(traceback.format_exc())
     
     # Help section
     st.markdown("---")
@@ -1406,13 +1578,14 @@ with tab2:
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
         if st.button("📝 Load Sample Data", width='stretch', type="secondary"):
-            # Load sample data without rerun
+            # Load sample data and refresh form
             sample_data = {
                 'pH': 6.8, 'EC': 1.2, 'Moisture': 32.0, 'Temperature': 24.0,
                 'Nitrogen': 65.0, 'Phosphorus': 28.0, 'Potassium': 180.0, 'Microbial': 5.8
             }
             st.session_state.sample_data = sample_data
-            st.success("✅ Sample data ready! The form above now contains realistic soil test values.")
+            st.success("✅ Sample data loaded! The form above now contains realistic soil test values.")
+            st.rerun()
 
 with tab3:
     st.markdown("### 📚 Soil Science Knowledge Base")
