@@ -3,4 +3,4 @@ pandas
 plotly
 sqlite-utils
 groq
-pydantic
+pydantic>=2.0

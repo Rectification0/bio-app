@@ -1174,86 +1174,33 @@ with tab1:
         
         st.markdown("---")
         
-        col1, col2 = st.columns([2, 1])
+        st.markdown("### 🔬 Parameter Analysis")
         
-        with col1:
-            st.markdown("### 🔬 Parameter Analysis")
-            
-            params = {
-                'pH': (soil['pH'], 'pH'), 'EC': (soil['EC'], 'dS/m'),
-                'Moisture': (soil['Moisture'], '%'), 'Nitrogen': (soil['Nitrogen'], 'mg/kg'),
-                'Phosphorus': (soil['Phosphorus'], 'mg/kg'), 'Potassium': (soil['Potassium'], 'mg/kg'),
+        params = {
+            'pH': (soil['pH'], 'pH'), 'EC': (soil['EC'], 'dS/m'),
+            'Moisture': (soil['Moisture'], '%'), 'Nitrogen': (soil['Nitrogen'], 'mg/kg'),
+            'Phosphorus': (soil['Phosphorus'], 'mg/kg'), 'Potassium': (soil['Potassium'], 'mg/kg'),
                 'Microbial': (soil['Microbial'], 'Index'), 'Temperature': (soil['Temperature'], '°C')
             }
             
-            for name, (val, unit) in params.items():
-                status, emoji = interpret(name, val)
-                css = "status-good" if "🟢" in emoji or "💚" in emoji else ("status-warning" if "🟡" in emoji else "status-critical")
-                
-                # Enhanced parameter display with progress bars
-                progress_val = min(val / {"pH": 14, "EC": 4, "Moisture": 100, "Nitrogen": 100, "Phosphorus": 100, "Potassium": 300, "Microbial": 10, "Temperature": 50}[name], 1.0)
-                
-                st.markdown(f'''
-                <div class="{css}">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                        <div><strong>{emoji} {name}:</strong> {val:.1f} {unit}</div>
-                        <div style="color: #94a3b8; font-size: 0.9rem;">{status}</div>
-                    </div>
-                    <div style="background: rgba(255,255,255,0.1); height: 4px; border-radius: 2px;">
-                        <div style="background: {"#10b981" if "🟢" in emoji or "💚" in emoji else "#f59e0b" if "🟡" in emoji else "#ef4444"}; 
-                                    height: 100%; width: {progress_val*100:.0f}%; border-radius: 2px; transition: width 0.5s ease;"></div>
-                    </div>
+        for name, (val, unit) in params.items():
+            status, emoji = interpret(name, val)
+            css = "status-good" if "🟢" in emoji or "💚" in emoji else ("status-warning" if "🟡" in emoji else "status-critical")
+            # Enhanced parameter display with progress bars
+            progress_val = min(val / {"pH": 14, "EC": 4, "Moisture": 100, "Nitrogen": 100, "Phosphorus": 100, "Potassium": 300, "Microbial": 10, "Temperature": 50}[name], 1.0)
+            
+            st.markdown(f'''
+            <div class="{css}">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                    <div><strong>{emoji} {name}:</strong> {val:.1f} {unit}</div>
+                    <div style="color: #94a3b8; font-size: 0.9rem;">{status}</div>
                 </div>
-                ''', unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown("### 📊 Health Score")
-            
-            # Compact gauge chart
-            fig1 = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=health,
-                title={'text': "Overall Health", 'font': {'color': '#e2e8f0', 'size': 14}},
-                number={'font': {'color': '#e2e8f0', 'size': 24}},
-                gauge={
-                    'axis': {'range': [0, 100], 'tickcolor': '#475569'},
-                    'bar': {'color': "#667eea", 'thickness': 0.3},
-                    'bgcolor': "rgba(30, 41, 59, 0.5)",
-                    'bordercolor': "#334155",
-                    'borderwidth': 2,
-                    'steps': [
-                        {'range': [0, 40], 'color': "rgba(239, 68, 68, 0.3)"},
-                        {'range': [40, 70], 'color': "rgba(245, 158, 11, 0.3)"},
-                        {'range': [70, 100], 'color': "rgba(16, 185, 129, 0.3)"}
-                    ],
-                    'threshold': {
-                        'line': {'color': "white", 'width': 3},
-                        'thickness': 0.75,
-                        'value': 90
-                    }
-                }
-            ))
-            fig1.update_layout(
-                height=200,
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font={'color': '#e2e8f0'},
-                margin=dict(l=10, r=10, t=30, b=10)
-            )
-            st.plotly_chart(fig1)
-            
-            # Quick stats
-            health_status = "Excellent" if health >= 70 else "Good" if health >= 50 else "Needs Attention"
-            health_color = "#10b981" if health >= 70 else "#f59e0b" if health >= 50 else "#ef4444"
-            
-            st.markdown(f"""
-            <div style="text-align: center; margin-top: 1rem;">
-                <div style="color: {health_color}; font-weight: 600; font-size: 1.1rem;">{health_status}</div>
-                <div style="color: #94a3b8; font-size: 0.9rem; margin-top: 0.5rem;">
-                    {len([p for p in params.items() if interpret(p[0], p[1][0])[1] in ["🟢", "💚"]])} parameters optimal
+                <div style="background: rgba(255,255,255,0.1); height: 4px; border-radius: 2px;">
+                    <div style="background: {"#10b981" if "🟢" in emoji or "💚" in emoji else "#f59e0b" if "🟡" in emoji else "#ef4444"}; 
+                                height: 100%; width: {progress_val*100:.0f}%; border-radius: 2px; transition: width 0.5s ease;"></div>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            ''', unsafe_allow_html=True)
         
         st.markdown("---")
         
@@ -1572,20 +1519,6 @@ with tab2:
         | **Potassium (mg/kg)** | <100 | 100-250 | >350 | Balance with other nutrients |
         | **Microbial Index** | <3 | 5-7 | >8 | Add organic matter if low |
         """)
-    
-    # Sample data button
-    st.markdown("---")
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
-        if st.button("📝 Load Sample Data", width='stretch', type="secondary"):
-            # Load sample data and refresh form
-            sample_data = {
-                'pH': 6.8, 'EC': 1.2, 'Moisture': 32.0, 'Temperature': 24.0,
-                'Nitrogen': 65.0, 'Phosphorus': 28.0, 'Potassium': 180.0, 'Microbial': 5.8
-            }
-            st.session_state.sample_data = sample_data
-            st.success("✅ Sample data loaded! The form above now contains realistic soil test values.")
-            st.rerun()
 
 with tab3:
     st.markdown("### 📚 Soil Science Knowledge Base")

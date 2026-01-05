@@ -2,6 +2,10 @@
 
 A precision agriculture application that analyzes soil data and provides AI-powered recommendations for optimal crop yields.
 
+## Privacy
+
+NutriSense processes agricultural soil chemistry data only. No personal information, user accounts, or sensitive data is collected or stored. All data is anonymous and used solely for soil analysis and crop recommendations.
+
 ## Features
 
 - **Soil Analysis**: Comprehensive analysis of pH, EC, moisture, NPK, and microbial activity
