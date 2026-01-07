@@ -371,8 +371,12 @@ def init_db():
     try:
         log_system_event('DATABASE_INIT_START')
         
-        os.makedirs('data', exist_ok=True)
-        conn = sqlite3.connect('data/soil_history.db', check_same_thread=False)
+        # Use absolute path for database directory to avoid CWD issues
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_dir = os.path.join(base_dir, 'data')
+        os.makedirs(db_dir, exist_ok=True)
+        db_path = os.path.join(db_dir, 'soil_history.db')
+        conn = sqlite3.connect(db_path, check_same_thread=False)
         
         # Create table
         conn.execute("""
@@ -387,7 +391,8 @@ def init_db():
             )
         """)
         
-        # Add health_score column if it doesn't exist (for existing databases)
+        # Add missing columns for existing databases (migration)
+        # 1) health_score column
         try:
             conn.execute("ALTER TABLE soil_records ADD COLUMN health_score REAL")
             log_database_operation('ALTER_TABLE', 'soil_records', True, record_count=None)
@@ -395,8 +400,18 @@ def init_db():
             if "duplicate column name" in str(e).lower():
                 log_system_event('DATABASE_COLUMN_EXISTS', {'column': 'health_score'})
             else:
-                log_error(e, 'DATABASE_ALTER_ERROR')
-            
+                log_error(e, 'DATABASE_ALTER_ERROR', {'column': 'health_score'})
+        
+        # 2) location column (fix for 'no column named location' errors on old DBs)
+        try:
+            conn.execute("ALTER TABLE soil_records ADD COLUMN location TEXT")
+            log_database_operation('ALTER_TABLE', 'soil_records', True, record_count=None)
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" in str(e).lower():
+                log_system_event('DATABASE_COLUMN_EXISTS', {'column': 'location'})
+            else:
+                log_error(e, 'DATABASE_ALTER_ERROR', {'column': 'location'})
+        
         conn.commit()
         
         # Get record count for logging
@@ -417,8 +432,18 @@ def get_groq_client():
     """Initialize Groq client with logging"""
     try:
         log_system_event('GROQ_CLIENT_INIT_START')
-        
-        api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+        api_key = None
+
+        # Safely read from Streamlit secrets if available
+        try:
+            api_key = st.secrets.get("GROQ_API_KEY")
+        except Exception:
+            # Secrets file may not exist in local/dev environments
+            api_key = None
+
+        # Fallback to environment variable
+        if not api_key:
+            api_key = os.getenv("GROQ_API_KEY")
         
         if not api_key:
             log_system_event('GROQ_API_KEY_MISSING')
@@ -1063,11 +1088,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Development mode indicator - LOCAL ONLY
-    if is_logging_enabled():
-        st.markdown("### 🔧 Development Mode")
-        st.info("📝 Logging enabled for local development\n\nUse command line tools:\n- `python log_analyzer.py`\n- `python log_monitor.py`")
-
 # Tabs
 tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "➕ Input", "📚 Guide"])
 
@@ -1126,6 +1146,14 @@ with tab1:
     else:
         soil = st.session_state.soil_data
         loc = st.session_state.location
+
+        # Parameter configuration reused across metrics and analysis
+        params = {
+            'pH': (soil['pH'], 'pH'), 'EC': (soil['EC'], 'dS/m'),
+            'Moisture': (soil['Moisture'], '%'), 'Nitrogen': (soil['Nitrogen'], 'mg/kg'),
+            'Phosphorus': (soil['Phosphorus'], 'mg/kg'), 'Potassium': (soil['Potassium'], 'mg/kg'),
+            'Microbial': (soil['Microbial'], 'Index'), 'Temperature': (soil['Temperature'], '°C')
+        }
         
         # Enhanced overview section
         st.markdown(f"""
@@ -1136,7 +1164,7 @@ with tab1:
         """, unsafe_allow_html=True)
         
         health = get_health_score(soil)
-        
+
         # Enhanced metrics row
         col1, col2, col3 = st.columns(3)
         
@@ -1163,26 +1191,26 @@ with tab1:
             """, unsafe_allow_html=True)
         
         with col3:
-            st.markdown("""
+            # Count how many parameters are currently in the optimal range
+            optimal_count = 0
+            for name, (val, _unit) in params.items():
+                status, _emoji = interpret(name, val)
+                if status == "Optimal":
+                    optimal_count += 1
+
+            st.markdown(f"""
             <div class="metric-card" style="text-align: center;">
-                <div style="font-size: 2.5rem; color: #60a5fa; margin-bottom: 0.5rem;">✓</div>
-                <h4>Analysis Status</h4>
-                <p style="color: #10b981; font-weight: 500;">Complete</p>
-                <div style="background: #10b981; height: 4px; border-radius: 2px; margin-top: 1rem;"></div>
+                <div style="font-size: 2.5rem; color: #60a5fa; margin-bottom: 0.5rem;">{optimal_count}</div>
+                <h4>Optimal Parameters</h4>
+                <p style="color: #10b981; font-weight: 500;">Out of {len(params)} tracked</p>
+                <div style="background: #60a5fa; height: 4px; border-radius: 2px; margin-top: 1rem; width: {100 * (optimal_count / len(params)) if len(params) else 0}%;"></div>
             </div>
             """, unsafe_allow_html=True)
         
         st.markdown("---")
         
         st.markdown("### 🔬 Parameter Analysis")
-        
-        params = {
-            'pH': (soil['pH'], 'pH'), 'EC': (soil['EC'], 'dS/m'),
-            'Moisture': (soil['Moisture'], '%'), 'Nitrogen': (soil['Nitrogen'], 'mg/kg'),
-            'Phosphorus': (soil['Phosphorus'], 'mg/kg'), 'Potassium': (soil['Potassium'], 'mg/kg'),
-                'Microbial': (soil['Microbial'], 'Index'), 'Temperature': (soil['Temperature'], '°C')
-            }
-            
+
         for name, (val, unit) in params.items():
             status, emoji = interpret(name, val)
             css = "status-good" if "🟢" in emoji or "💚" in emoji else ("status-warning" if "🟡" in emoji else "status-critical")
@@ -1466,10 +1494,6 @@ with tab2:
                 st.info("💡 Please try again or contact support if the problem persists")
                 
                 # Show debug info in development
-                if is_logging_enabled():
-                    with st.expander("🔧 Debug Information (Development Only)"):
-                        st.code(traceback.format_exc())
-    
     # Help section
     st.markdown("---")
     st.markdown("### ❓ Need Help Getting Soil Data?")
