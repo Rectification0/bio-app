@@ -11,7 +11,7 @@ NutriSense processes agricultural soil chemistry data only. No personal informat
 - **Soil Analysis**: Comprehensive analysis of pH, EC, moisture, NPK, and microbial activity
 - **AI Recommendations**: Groq-powered suggestions for crops, fertilizers, and irrigation
 - **Visual Dashboard**: Interactive charts and health scoring
-- **History Tracking**: SQLite database for analysis history
+- **History Storage**: Analyses are saved to a SQLite database (not yet surfaced in the UI as a history view)
 - **Real-time Insights**: Instant soil health interpretation
 
 ## Quick Start
@@ -57,10 +57,10 @@ NutriSense processes agricultural soil chemistry data only. No personal informat
 
 ## Usage
 
-1. **Input Data**: Enter soil test results in the "Input Data" tab
+1. **Input Data**: Enter soil test results in the "Input" tab
 2. **Dashboard**: View comprehensive analysis and health scores
 3. **AI Analysis**: Get crop suggestions and recommendations
-4. **History**: Track previous analyses and trends
+4. **Guide**: Reference soil parameter ranges and interpretation
 
 ## Soil Parameters
 
@@ -77,7 +77,8 @@ NutriSense processes agricultural soil chemistry data only. No personal informat
 ## Project Structure
 
 ```
-├── app.py                 # Main Streamlit application (single-file)
+├── app.py                 # Streamlit frontend: UI, tabs, forms, and rendering
+├── backend.py             # Backend logic: SQLite storage, Groq API calls, validation, logging
 ├── data/                  # SQLite databases (auto-created)
 ├── .streamlit/            # Streamlit configuration
 ├── .devcontainer/         # Development container setup
@@ -88,7 +89,7 @@ NutriSense processes agricultural soil chemistry data only. No personal informat
 ## Technology Stack
 
 - **Frontend**: Streamlit
-- **Visualization**: Plotly
+- **Visualization**: Streamlit native (metrics, progress bars)
 - **Database**: SQLite
 - **AI**: Groq API (Llama 3.3)
 - **Validation**: Pydantic

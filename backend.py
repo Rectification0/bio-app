@@ -15,7 +15,13 @@ import pandas as pd
 import sqlite3
 from pydantic import BaseModel, field_validator
 import hashlib
+import sys
+import threading
 import streamlit as st
+
+# Guards concurrent read-modify-write of the JSON log file across threads
+# sharing this process (init_db uses check_same_thread=False).
+_log_file_lock = threading.Lock()
 
 # Enhanced Logging Configuration - LOCAL ONLY
 def setup_logging():
@@ -31,8 +37,9 @@ def setup_logging():
             # Create logs directory
             log_dir = "logs"
             os.makedirs(log_dir, exist_ok=True)
-        except:
+        except Exception as e:
             # If can't create logs directory, disable logging
+            print(f"[nutrisense] Could not create logs directory, logging disabled: {e}", file=sys.stderr)
             return logging.getLogger('nutrisense_disabled')
     elif not os.path.exists('logs'):
         # No logs directory and can't create one - disable logging
@@ -95,31 +102,35 @@ def setup_logging():
                     if record.exc_info:
                         log_entry["exception"] = self.format(record)
                     
-                    # Read current logs
-                    try:
-                        with open(self.filename, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                    except (FileNotFoundError, json.JSONDecodeError):
-                        data = {"logs": [], "metadata": {"created": datetime.now().isoformat(), "version": "1.0"}}
-                    
-                    # Add new log entry
-                    data["logs"].append(log_entry)
-                    data["metadata"]["last_updated"] = datetime.now().isoformat()
-                    data["metadata"]["total_logs"] = len(data["logs"])
-                    
-                    # Keep only last 1000 logs to prevent file from growing too large
-                    if len(data["logs"]) > 1000:
-                        data["logs"] = data["logs"][-1000:]
-                        data["metadata"]["truncated"] = True
-                        data["metadata"]["truncated_at"] = datetime.now().isoformat()
-                    
-                    # Write back to file (real-time update)
-                    with open(self.filename, 'w', encoding='utf-8') as f:
-                        json.dump(data, f, indent=2, ensure_ascii=False)
-                        
-                except Exception:
-                    # Silently fail if logging doesn't work
-                    pass
+                    # Guard the read-modify-write cycle: multiple Streamlit
+                    # sessions/threads can share this process and log concurrently.
+                    with _log_file_lock:
+                        # Read current logs
+                        try:
+                            with open(self.filename, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            data = {"logs": [], "metadata": {"created": datetime.now().isoformat(), "version": "1.0"}}
+
+                        # Add new log entry
+                        data["logs"].append(log_entry)
+                        data["metadata"]["last_updated"] = datetime.now().isoformat()
+                        data["metadata"]["total_logs"] = len(data["logs"])
+
+                        # Keep only last 1000 logs to prevent file from growing too large
+                        if len(data["logs"]) > 1000:
+                            data["logs"] = data["logs"][-1000:]
+                            data["metadata"]["truncated"] = True
+                            data["metadata"]["truncated_at"] = datetime.now().isoformat()
+
+                        # Write back to file (real-time update)
+                        with open(self.filename, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, indent=2, ensure_ascii=False)
+
+                except Exception as e:
+                    # Don't crash the app over a logging failure, but surface it
+                    # so a broken log pipeline isn't completely invisible.
+                    print(f"[nutrisense] Failed to write log entry: {e}", file=sys.stderr)
         
         # Add JSON handler to logger
         json_handler = JSONFileHandler(log_file)
@@ -134,8 +145,9 @@ def setup_logging():
             console_handler.setFormatter(console_formatter)
             logger.addHandler(console_handler)
     
-    except Exception:
+    except Exception as e:
         # If any logging setup fails, return disabled logger
+        print(f"[nutrisense] Logging setup failed, logging disabled: {e}", file=sys.stderr)
         return logging.getLogger('nutrisense_disabled')
     
     return logger
@@ -172,8 +184,8 @@ def log_event(event_type: str, message: str, data: Optional[Dict] = None):
         
         # Log with extra data
         logger.info(log_message, extra=extra_data)
-    except:
-        pass  # Silently fail if logging doesn't work
+    except Exception as e:
+        print(f"[nutrisense] Failed to log event '{event_type}': {e}", file=sys.stderr)
 
 def log_error(error: Exception, context: str = "", additional_data: Optional[Dict] = None):
     """Log errors with full context and traceback - LOCAL ONLY"""
@@ -198,8 +210,8 @@ def log_error(error: Exception, context: str = "", additional_data: Optional[Dic
         
         # Log error with extra data
         logger.error(error_message, extra=extra_data)
-    except:
-        pass  # Silently fail if logging doesn't work
+    except Exception as e:
+        print(f"[nutrisense] Failed to log error for context '{context}': {e}", file=sys.stderr)
 
 def log_user_action(action: str, details: Optional[Dict] = None):
     """Log user interactions and actions - LOCAL ONLY"""
@@ -274,19 +286,71 @@ class SoilData(BaseModel):
     Potassium: float
     Microbial: float
     Temperature: float
-    
+
     @field_validator('pH')
     @classmethod
     def pH_range(cls, v):
-        try:
-            if not 0 <= v <= 14:
-                log_error(ValueError(f'pH value {v} out of range 0-14'), 'SOIL_DATA_VALIDATION')
-                raise ValueError('pH must be 0-14')
-            log_event('VALIDATION_SUCCESS', f'pH validation passed: {v}')
-            return v
-        except Exception as e:
-            log_error(e, 'pH_VALIDATION_ERROR', {'value': v})
-            raise
+        if not 0 <= v <= 14:
+            log_error(ValueError(f'pH value {v} out of range 0-14'), 'SOIL_DATA_VALIDATION')
+            raise ValueError('pH must be between 0 and 14')
+        log_event('VALIDATION_SUCCESS', f'pH validation passed: {v}')
+        return v
+
+    @field_validator('EC')
+    @classmethod
+    def EC_range(cls, v):
+        if not 0 <= v <= 20:
+            log_error(ValueError(f'EC value {v} out of range 0-20'), 'SOIL_DATA_VALIDATION')
+            raise ValueError('EC cannot be negative or exceed 20 dS/m')
+        return v
+
+    @field_validator('Moisture')
+    @classmethod
+    def Moisture_range(cls, v):
+        if not 0 <= v <= 100:
+            log_error(ValueError(f'Moisture value {v} out of range 0-100'), 'SOIL_DATA_VALIDATION')
+            raise ValueError('Moisture cannot be negative or exceed 100%')
+        return v
+
+    @field_validator('Nitrogen')
+    @classmethod
+    def Nitrogen_range(cls, v):
+        if not 0 <= v <= 500:
+            log_error(ValueError(f'Nitrogen value {v} out of range 0-500'), 'SOIL_DATA_VALIDATION')
+            raise ValueError('Nitrogen cannot be negative or exceed 500 mg/kg')
+        return v
+
+    @field_validator('Phosphorus')
+    @classmethod
+    def Phosphorus_range(cls, v):
+        if not 0 <= v <= 200:
+            log_error(ValueError(f'Phosphorus value {v} out of range 0-200'), 'SOIL_DATA_VALIDATION')
+            raise ValueError('Phosphorus cannot be negative or exceed 200 mg/kg')
+        return v
+
+    @field_validator('Potassium')
+    @classmethod
+    def Potassium_range(cls, v):
+        if not 0 <= v <= 500:
+            log_error(ValueError(f'Potassium value {v} out of range 0-500'), 'SOIL_DATA_VALIDATION')
+            raise ValueError('Potassium cannot be negative or exceed 500 mg/kg')
+        return v
+
+    @field_validator('Microbial')
+    @classmethod
+    def Microbial_range(cls, v):
+        if not 0 <= v <= 10:
+            log_error(ValueError(f'Microbial value {v} out of range 0-10'), 'SOIL_DATA_VALIDATION')
+            raise ValueError('Microbial index cannot be negative or exceed 10')
+        return v
+
+    @field_validator('Temperature')
+    @classmethod
+    def Temperature_range(cls, v):
+        if not 0 <= v <= 50:
+            log_error(ValueError(f'Temperature value {v} out of range 0-50'), 'SOIL_DATA_VALIDATION')
+            raise ValueError('Temperature cannot be negative or exceed 50°C')
+        return v
 
 def get_health_score(soil: Dict) -> float:
     """Calculate soil health score with comprehensive error handling and logging"""
@@ -336,7 +400,7 @@ def interpret(param: str, val: float) -> tuple:
         
         data = {
             'pH': [(0,5.5,"Acidic","🔴"),(5.5,6.5,"Low","🟡"),(6.5,7.5,"Optimal","🟢"),(7.5,8.5,"High","🟡"),(8.5,15,"Alkaline","🔴")],
-            'EC': [(0,0.8,"Low","🟢"),(0.8,2,"Moderate","🟡"),(2,4,"High","🟠"),(4,25,"Very High","🔴")],
+            'EC': [(0,0.4,"Low","🟡"),(0.4,1.6,"Optimal","🟢"),(1.6,2,"Moderate","🟡"),(2,4,"High","🟠"),(4,25,"Very High","🔴")],
             'Moisture': [(0,15,"Dry","🔴"),(15,25,"Low","🟡"),(25,40,"Optimal","🟢"),(40,60,"High","🟡"),(60,101,"Wet","🔴")],
             'Nitrogen': [(0,40,"Low","🔴"),(40,80,"Optimal","🟢"),(80,501,"High","🟡")],
             'Phosphorus': [(0,20,"Low","🔴"),(20,50,"Optimal","🟢"),(50,201,"High","🟡")],
@@ -484,11 +548,9 @@ Microbial: {soil['Microbial']:.2f}/10, Temp: {soil['Temperature']:.1f}°C"""
         return f"Error building prompt for {task}"
 
 @st.cache_data(ttl=300)
-def call_groq(_hash: str, prompt: str, _task: str) -> str:
+def call_groq(prompt_hash: str, prompt: str, _task: str) -> str:
     """Call Groq API with comprehensive error handling and logging"""
     try:
-        log_ai_interaction('START', st.session_state.get("selected_model", "unknown"), _task, True)
-        
         client = get_groq_client()
         if not client:
             log_ai_interaction(st.session_state.get("selected_model", "unknown"), _task, False, error="No client available")
@@ -508,7 +570,8 @@ def call_groq(_hash: str, prompt: str, _task: str) -> str:
         log_event('AI_REQUEST_START', f'Calling {model} for {_task}', {
             'model': model,
             'task': _task,
-            'prompt_length': len(prompt)
+            'prompt_length': len(prompt),
+            'prompt_hash': prompt_hash
         })
         
         # Add timeout and retry logic

@@ -5,7 +5,6 @@ Contains all Streamlit UI components, styling, and user interface logic
 
 import streamlit as st
 import hashlib
-from datetime import datetime
 
 # Import all backend functions and utilities
 from backend import (
@@ -16,22 +15,40 @@ from backend import (
     log_event,
     log_error,
     is_production_environment,
-    
+
     # Business logic
     get_health_score,
     interpret,
     SoilData,
-    
+
     # Database operations
     init_db,
-    
+
     # AI operations
     get_groq_client,
     build_prompt,
     call_groq,
-    save_record,
-    load_history
+    save_record
 )
+
+# Validation bounds for each soil parameter, matching backend.py's SoilData field validators
+PARAM_RANGES = {
+    "pH": (0.0, 14.0),
+    "EC": (0.0, 20.0),
+    "Moisture": (0.0, 100.0),
+    "Nitrogen": (0.0, 500.0),
+    "Phosphorus": (0.0, 200.0),
+    "Potassium": (0.0, 500.0),
+    "Microbial": (0.0, 10.0),
+    "Temperature": (0.0, 50.0),
+}
+
+# Separate visual scale for the dashboard progress bars — tuned to the practically
+# meaningful range per parameter, not the hard input-validation ceiling above.
+PARAM_PROGRESS_MAX = {
+    "pH": 14, "EC": 4, "Moisture": 100, "Nitrogen": 100,
+    "Phosphorus": 100, "Potassium": 300, "Microbial": 10, "Temperature": 50
+}
 
 # Page configuration
 st.set_page_config(
@@ -409,13 +426,6 @@ hr {
     background: linear-gradient(90deg, #667eea, #764ba2);
     border-radius: 4px;
 }
-
-/* Enhanced Plotly Charts */
-.js-plotly-plot {
-    border-radius: 12px;
-    overflow: hidden;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -477,18 +487,16 @@ with st.sidebar:
     st.markdown("### 🤖 AI Model Selection")
     models = {
         "🦙 Llama 3.3 70B": "llama-3.3-70b-versatile",
-        "⚡ Llama 3.1 8B (Fast)": "llama-3.1-8b-instant", 
-        "🔥 Mixtral 8x7B": "mixtral-8x7b-32768",
+        "⚡ Llama 3.1 8B (Fast)": "llama-3.1-8b-instant",
         "💎 Gemma 2 9B": "gemma2-9b-it"
     }
     selected = st.selectbox("Choose AI Model", list(models.keys()), index=0)
     st.session_state.selected_model = models[selected]
-    
+
     # Model info
     model_info = {
         "🦙 Llama 3.3 70B": "Best quality, slower",
         "⚡ Llama 3.1 8B (Fast)": "Fast responses",
-        "🔥 Mixtral 8x7B": "Balanced performance",
         "💎 Gemma 2 9B": "Efficient and accurate"
     }
     st.caption(f"ℹ️ {model_info[selected]}")
@@ -622,7 +630,7 @@ with tab1:
             status, emoji = interpret(name, val)
             css = "status-good" if "🟢" in emoji or "💚" in emoji else ("status-warning" if "🟡" in emoji else "status-critical")
             # Enhanced parameter display with progress bars
-            progress_val = min(val / {"pH": 14, "EC": 4, "Moisture": 100, "Nitrogen": 100, "Phosphorus": 100, "Potassium": 300, "Microbial": 10, "Temperature": 50}[name], 1.0)
+            progress_val = min(val / PARAM_PROGRESS_MAX[name], 1.0)
             
             st.markdown(f'''
             <div class="{css}">
@@ -691,6 +699,62 @@ with tab1:
                     st.markdown("#### 💊 Fertilizer Plan")
                     st.info(st.session_state.fertilizer)
 
+def validate_soil_inputs(input_values):
+    """Validate raw soil inputs via SoilData (the single source of truth for range checks); returns the dict or raises ValueError."""
+    try:
+        SoilData(**input_values)
+    except Exception as pydantic_error:
+        log_error(pydantic_error, 'PYDANTIC_VALIDATION_ERROR', input_values)
+        raise ValueError(f"Data validation failed: {str(pydantic_error)}")
+    return input_values
+
+
+def save_soil_data_to_session(soil_dict, loc_input):
+    """Store validated soil data in session state and clear stale AI results. Returns the cleared key names."""
+    try:
+        st.session_state.soil_data = soil_dict
+        st.session_state.location = loc_input or "Unknown Location"
+    except Exception as storage_error:
+        log_error(storage_error, 'SESSION_STORAGE_ERROR', soil_dict)
+        raise ValueError("Failed to store data in session")
+
+    cleared_keys = []
+    for key in ['summary', 'crops', 'fertilizer']:
+        if key in st.session_state:
+            del st.session_state[key]
+            cleared_keys.append(key)
+    return cleared_keys
+
+
+def compute_health_score_safe(soil_dict):
+    """Compute the health score, falling back to a safe default on failure."""
+    try:
+        health_score = get_health_score(soil_dict)
+        if not isinstance(health_score, (int, float)) or health_score < 0 or health_score > 100:
+            log_error(ValueError(f"Invalid health score: {health_score}"), 'INVALID_HEALTH_SCORE')
+            return 50.0
+        return health_score
+    except Exception as health_error:
+        log_error(health_error, 'HEALTH_SCORE_ERROR', soil_dict)
+        return 50.0
+
+
+def render_immediate_results(soil_dict, health_score):
+    """Render the quick post-submit metrics row shown right after analysis."""
+    try:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Health Score", f"{health_score:.0f}/100")
+        with col2:
+            ph_status, ph_icon = interpret('pH', soil_dict['pH'])
+            st.metric("pH Status", f"{ph_icon} {ph_status}")
+        with col3:
+            st.metric("Parameters", "8 tracked")
+    except Exception as display_error:
+        log_error(display_error, 'METRICS_DISPLAY_ERROR')
+        st.warning("Analysis completed but display metrics failed")
+
+
 with tab2:
     st.markdown("### ➕ Enter Soil Test Results")
     st.markdown("Input your laboratory soil analysis data for AI-powered insights")
@@ -718,53 +782,53 @@ with tab2:
             st.markdown("**🔬 Chemical Properties**")
             
             pH = st.number_input(
-                "pH Level", 
-                min_value=0.0, max_value=14.0, value=sample.get('pH', 7.0), step=0.1,
+                "pH Level",
+                min_value=PARAM_RANGES["pH"][0], max_value=PARAM_RANGES["pH"][1], value=sample.get('pH', 7.0), step=0.1,
                 help="Soil acidity/alkalinity. Optimal range: 6.5-7.5"
             )
-            
+
             EC = st.number_input(
-                "Electrical Conductivity (dS/m)", 
-                min_value=0.0, max_value=20.0, value=sample.get('EC', 2.0), step=0.1,
+                "Electrical Conductivity (dS/m)",
+                min_value=PARAM_RANGES["EC"][0], max_value=PARAM_RANGES["EC"][1], value=sample.get('EC', 2.0), step=0.1,
                 help="Soil salinity indicator. <2.0 dS/m is ideal for most crops"
             )
-            
+
             N = st.number_input(
-                "Available Nitrogen (mg/kg)", 
-                min_value=0.0, max_value=500.0, value=sample.get('Nitrogen', 50.0), step=1.0,
+                "Available Nitrogen (mg/kg)",
+                min_value=PARAM_RANGES["Nitrogen"][0], max_value=PARAM_RANGES["Nitrogen"][1], value=sample.get('Nitrogen', 50.0), step=1.0,
                 help="Essential for plant growth. Optimal: 40-80 mg/kg"
             )
-            
+
             P = st.number_input(
-                "Available Phosphorus (mg/kg)", 
-                min_value=0.0, max_value=200.0, value=sample.get('Phosphorus', 30.0), step=1.0,
+                "Available Phosphorus (mg/kg)",
+                min_value=PARAM_RANGES["Phosphorus"][0], max_value=PARAM_RANGES["Phosphorus"][1], value=sample.get('Phosphorus', 30.0), step=1.0,
                 help="Important for root development. Optimal: 20-50 mg/kg"
             )
-        
+
         with col2:
             st.markdown("**🌡️ Physical & Biological Properties**")
-            
+
             Moist = st.number_input(
-                "Moisture Content (%)", 
-                min_value=0.0, max_value=100.0, value=sample.get('Moisture', 25.0), step=1.0,
+                "Moisture Content (%)",
+                min_value=PARAM_RANGES["Moisture"][0], max_value=PARAM_RANGES["Moisture"][1], value=sample.get('Moisture', 25.0), step=1.0,
                 help="Current soil water content. Optimal: 25-40%"
             )
-            
+
             Temp = st.number_input(
-                "Soil Temperature (°C)", 
-                min_value=0.0, max_value=50.0, value=sample.get('Temperature', 25.0), step=0.5,
+                "Soil Temperature (°C)",
+                min_value=PARAM_RANGES["Temperature"][0], max_value=PARAM_RANGES["Temperature"][1], value=sample.get('Temperature', 25.0), step=0.5,
                 help="Current soil temperature affects microbial activity"
             )
-            
+
             K = st.number_input(
-                "Available Potassium (mg/kg)", 
-                min_value=0.0, max_value=500.0, value=sample.get('Potassium', 150.0), step=1.0,
+                "Available Potassium (mg/kg)",
+                min_value=PARAM_RANGES["Potassium"][0], max_value=PARAM_RANGES["Potassium"][1], value=sample.get('Potassium', 150.0), step=1.0,
                 help="Essential for disease resistance. Optimal: 100-250 mg/kg"
             )
-            
+
             Micro = st.number_input(
-                "Microbial Activity Index", 
-                min_value=0.0, max_value=10.0, value=sample.get('Microbial', 5.0), step=0.1,
+                "Microbial Activity Index",
+                min_value=PARAM_RANGES["Microbial"][0], max_value=PARAM_RANGES["Microbial"][1], value=sample.get('Microbial', 5.0), step=0.1,
                 help="Biological activity level (0-10 scale). Higher is better"
             )
         
@@ -780,121 +844,51 @@ with tab2:
             )
         
         if submitted:
+            soil_dict = None
             try:
                 log_user_action('SOIL_DATA_FORM_SUBMITTED', {'location': loc_input})
-                
-                # Validate all inputs are present and numeric
+
                 input_values = {
-                    "pH": pH, "EC": EC, "Moisture": Moist, "Nitrogen": N, 
+                    "pH": pH, "EC": EC, "Moisture": Moist, "Nitrogen": N,
                     "Phosphorus": P, "Potassium": K, "Microbial": Micro, "Temperature": Temp
                 }
-                
-                # Check for None or invalid values
-                for param, value in input_values.items():
-                    if value is None:
-                        raise ValueError(f"{param} cannot be empty")
-                    if not isinstance(value, (int, float)):
-                        raise ValueError(f"{param} must be a number")
-                    if value < 0:
-                        raise ValueError(f"{param} cannot be negative")
-                
-                # Additional range validations
-                if not (0 <= pH <= 14):
-                    raise ValueError("pH must be between 0 and 14")
-                if EC > 20:
-                    raise ValueError("EC cannot exceed 20 dS/m")
-                if Moist > 100:
-                    raise ValueError("Moisture cannot exceed 100%")
-                if N > 500:
-                    raise ValueError("Nitrogen cannot exceed 500 mg/kg")
-                if P > 200:
-                    raise ValueError("Phosphorus cannot exceed 200 mg/kg")
-                if K > 500:
-                    raise ValueError("Potassium cannot exceed 500 mg/kg")
-                if Micro > 10:
-                    raise ValueError("Microbial index cannot exceed 10")
-                if Temp > 50:
-                    raise ValueError("Temperature cannot exceed 50°C")
-                
-                soil_dict = input_values
-                
-                log_event('SOIL_DATA_VALIDATION_START', 'Validating soil data', soil_dict)
-                
-                # Validate using Pydantic with additional error context
-                try:
-                    SoilData(**soil_dict)
-                except Exception as pydantic_error:
-                    log_error(pydantic_error, 'PYDANTIC_VALIDATION_ERROR', soil_dict)
-                    raise ValueError(f"Data validation failed: {str(pydantic_error)}")
-                
+
+                log_event('SOIL_DATA_VALIDATION_START', 'Validating soil data', input_values)
+                soil_dict = validate_soil_inputs(input_values)
                 log_event('SOIL_DATA_VALIDATION_SUCCESS', 'Soil data validation passed')
-                
-                # Store data with error handling
-                try:
-                    st.session_state.soil_data = soil_dict
-                    st.session_state.location = loc_input or "Unknown Location"
-                    st.session_state.timestamp = datetime.now().isoformat()
-                except Exception as storage_error:
-                    log_error(storage_error, 'SESSION_STORAGE_ERROR', soil_dict)
-                    raise ValueError("Failed to store data in session")
-                
-                # Clear previous AI results
-                cleared_keys = []
-                for key in ['summary', 'crops', 'fertilizer']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                        cleared_keys.append(key)
-                
+
+                cleared_keys = save_soil_data_to_session(soil_dict, loc_input)
+
                 log_user_action('SOIL_DATA_SAVED', {
                     'location': loc_input,
                     'cleared_ai_results': cleared_keys,
                     'parameters': list(soil_dict.keys())
                 })
-                
-                # Calculate health score with error handling
-                try:
-                    health_score = get_health_score(soil_dict)
-                    if not isinstance(health_score, (int, float)) or health_score < 0 or health_score > 100:
-                        log_error(ValueError(f"Invalid health score: {health_score}"), 'INVALID_HEALTH_SCORE')
-                        health_score = 50.0  # Safe fallback
-                except Exception as health_error:
-                    log_error(health_error, 'HEALTH_SCORE_ERROR', soil_dict)
-                    health_score = 50.0
-                
+
+                health_score = compute_health_score_safe(soil_dict)
+
                 st.success("✅ Soil data saved and analyzed successfully!")
-                
-                # Show immediate analysis results with error handling
-                try:
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Health Score", f"{health_score:.0f}/100")
-                    with col2:
-                        ph_status, ph_icon = interpret('pH', soil_dict['pH'])
-                        st.metric("pH Status", f"{ph_icon} {ph_status}")
-                    with col3:
-                        st.metric("Parameters", "8 tracked")
-                except Exception as display_error:
-                    log_error(display_error, 'METRICS_DISPLAY_ERROR')
-                    st.warning("Analysis completed but display metrics failed")
-                
+
+                render_immediate_results(soil_dict, health_score)
+
                 st.info("💡 Go to the **Dashboard** tab to view detailed analysis and AI recommendations.")
-                
+
                 # Trigger page refresh to update dashboard immediately
                 st.rerun()
-                
+
             except ValueError as e:
                 log_error(e, 'SOIL_DATA_VALIDATION_ERROR', {
-                    'form_data': soil_dict if 'soil_dict' in locals() else 'not_created',
+                    'form_data': soil_dict if soil_dict is not None else 'not_created',
                     'location': loc_input,
                     'error_type': 'ValueError'
                 })
                 st.error(f"❌ Validation Error: {str(e)}")
                 st.info("💡 Please check that all values are within the specified ranges")
-            
+
             except Exception as e:
                 log_error(e, 'SOIL_DATA_FORM_ERROR', {
                     'location': loc_input,
-                    'form_data': soil_dict if 'soil_dict' in locals() else 'not_created',
+                    'form_data': soil_dict if soil_dict is not None else 'not_created',
                     'error_type': type(e).__name__
                 })
                 st.error(f"❌ Unexpected Error: {str(e)}")
