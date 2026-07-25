@@ -1,0 +1,33 @@
+{
+    "name": "NutriSense Dev Container",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "python.analysis.typeCheckingMode": "basic",
+                "editor.formatOnSave": true,
+                "editor.tabSize": 4,
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "files.exclude": {
+                    "**/__pycache__": true
+                },
+                "files.watcherExclude": {
+                    "**/.git/**": true,
+                    "**/node_modules/**": true,
+                    "**/.venv/**": true
+                }
+            },
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance"
+            ]
+        }
+    },
+    "forwardPorts": [
+        8501
+    ],
+    "postCreateCommand": "pip install -r requirements.txt"
+}

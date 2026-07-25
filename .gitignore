@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/secrets.toml.example
+
+# Data
+data/*.db
+data/*.sqlite
+data/*.csv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+.idea/
+*.sublime-*
+
+# Environment
+.env
+.env.local
+.env.production
+.env.*
+
+# Logs - NEVER commit logs to public repositories
+logs/
+*.log
+log_analyzer.py
+log_monitor.py
+logging_config.py
+LOGGING_*.md
+
+# Development Documentation (redundant internal notes)
+CRITICAL_FIXES_APPLIED.md
+DEPRECATION_FIX.md
+DEPLOYMENT_SECURITY.md
+HISTORY_TAB_REMOVAL.md
+PLOTLY_ENVIRONMENT_FIXES.md
+PRODUCTION_READINESS_REPORT.md
+UI_UX_ENHANCEMENTS.md
+PROJECT_STATUS.md
+GITIGNORE_UPDATE.md
+
+# Test files
+test_*.py
+stress_test.py
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Cache and runtime files
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
